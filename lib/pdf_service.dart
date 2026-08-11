@@ -40,7 +40,8 @@ class PdfService {
             pw.SizedBox(height: 16),
             pw.Paragraph(
               text: summaryText,
-              style: const pw.TextStyle(fontSize: 12, lineSpacing: 1.5),
+              // Aumentamos o fontSize de 12 para 16 e o lineSpacing para 1.6
+              style: const pw.TextStyle(fontSize: 19, lineSpacing: 1.6),
             ),
           ];
         },

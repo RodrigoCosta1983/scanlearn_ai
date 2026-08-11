@@ -160,8 +160,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       return;
     }
 
-    final String apiUrl =
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey';
+
 
     debugPrint('════════════════════════════════════════');
     debugPrint('🚀 SCANLEARN DEBUG');
@@ -259,7 +259,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       return;
     }
 
-    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey';
+
 
     debugPrint('════════════════════════════════════════');
     debugPrint('🚀 SCANLEARN DEBUG');
@@ -375,7 +376,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
     });
 
     final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
-    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
+    //final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey';
 
     try {
       int score = 0;
@@ -413,19 +415,26 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
 
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(response.body);
-        final String textResponse = data['candidates'][0]['content']['parts'][0]['text'];
+        String textResponse = data['candidates'][0]['content']['parts'][0]['text'];
 
-        setState(() {
-          _currentState = AppState.upload;
-        });
+        // Limpa possíveis marcações de bloco de código Markdown que a IA envia
+        textResponse = textResponse.replaceAll('```json', '').replaceAll('```', '').trim();
 
-        if (mounted) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PdfPreviewScreen(summaryText: textResponse),
-            ),
-          );
+        try {
+          // Tenta decodificar o JSON para extrair apenas a mensagem do professor
+          final Map<String, dynamic> jsonResult = jsonDecode(textResponse);
+
+          setState(() {
+            // Salva o feedback e muda a tela para o gabarito (results)
+            _teacherFeedback = jsonResult['teacher_feedback'] ?? "Aqui está o seu resultado!";
+            _currentState = AppState.results;
+          });
+        } catch (e) {
+          // Fallback de segurança: se a IA não mandar em JSON, exibe o texto bruto mesmo assim
+          setState(() {
+            _teacherFeedback = textResponse;
+            _currentState = AppState.results;
+          });
         }
 
       } else if (response.statusCode == 429) {
@@ -489,7 +498,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
               const SizedBox(height: 32),
               Center(
                 child: Text(
-                  'Versão do App: 1.0.2+6',
+                  'Versão do App: 1.0.1+8',
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                 ),
               ),

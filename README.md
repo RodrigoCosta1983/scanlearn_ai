@@ -20,7 +20,7 @@ Customização do Estudo
 
 Níveis de Dificuldade: O usuário pode escolher a complexidade das perguntas (Simples, Intermediário ou Avançado), permitindo desde revisões básicas até a preparação para exames com "pegadinhas".
 
-Controle de Quantidade: Flexibilidade para gerar quizzes rápidos (3 ou 5 questões) ou testes mais longos (7 ou 10 questões) a partir do mesmo material.
+Controle de Quantidade: Flexibilidade para gerar quizzes rápidos (5 ou 10 questões) ou testes mais longos (15 ou 20 questões) a partir do mesmo material.
 
 Interface e Experiência do Usuário (UX/UI)
 

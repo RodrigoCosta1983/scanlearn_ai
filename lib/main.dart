@@ -4,14 +4,13 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:printing/printing.dart';
+
+import 'pdf_service.dart';
 
 Future<void> main() async {
-  // Garante que os bindings do Flutter estão inicializados antes de carregar o .env
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Carrega o arquivo .env
   await dotenv.load(fileName: ".env");
-
   runApp(const ScanLearnApp());
 }
 
@@ -63,28 +62,29 @@ class ScanLearnHomePage extends StatefulWidget {
   State<ScanLearnHomePage> createState() => _ScanLearnHomePageState();
 }
 
-enum AppState { upload, generating, quiz, results }
+enum AppState { upload, generating, generatingSummary, quiz, analyzingResults, results }
 
 class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
   AppState _currentState = AppState.upload;
-
+  
   List<Uint8List> _imageBytesList = [];
   List<String> _mimeTypesList = [];
-
+  
   List<QuizQuestion> _quizData = [];
   int _currentQuestionIdx = 0;
   Map<int, String> _userAnswers = {};
+  
+  String _teacherFeedback = "Parabéns por concluir o quiz! Continue praticando com novos trechos do seu material para aprimorar ainda mais o seu aprendizado.";
   String? _errorMessage;
-
-  int _numberOfQuestions = 5; // Valor padrão de questões
-  String _difficultyLevel = 'Intermediário'; // Nível de dificuldade padrão
+  
+  int _numberOfQuestions = 5;
+  String _difficultyLevel = 'Intermediário';
 
   final ImagePicker _picker = ImagePicker();
 
   Future<void> _pickImage(ImageSource source) async {
     try {
       if (source == ImageSource.gallery) {
-        // Permite selecionar múltiplas imagens da galeria de uma vez
         final List<XFile> images = await _picker.pickMultiImage();
         if (images.isNotEmpty) {
           for (var image in images) {
@@ -101,7 +101,6 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
           }
         }
       } else {
-        // Câmera captura uma por vez, mas vamos adicionando à lista
         final XFile? image = await _picker.pickImage(source: source);
         if (image != null) {
           final bytes = await image.readAsBytes();
@@ -138,9 +137,108 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       _quizData = [];
       _currentQuestionIdx = 0;
       _userAnswers = {};
+      _teacherFeedback = "Parabéns por concluir o quiz! Continue praticando com novos trechos do seu material para aprimorar ainda mais o seu aprendizado.";
       _errorMessage = null;
-      // Não resetamos _numberOfQuestions e _difficultyLevel para lembrar a preferência do usuário
     });
+  }
+
+  Future<void> _generateSummary() async {
+    if (_imageBytesList.isEmpty) return;
+
+    setState(() {
+      _currentState = AppState.generatingSummary;
+      _errorMessage = null;
+    });
+
+    final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
+
+    if (apiKey.isEmpty) {
+      setState(() {
+        _errorMessage = "API Key não encontrada. Verifique o arquivo .env.";
+        _currentState = AppState.upload;
+      });
+      return;
+    }
+
+    final String apiUrl =
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
+
+    debugPrint('════════════════════════════════════════');
+    debugPrint('🚀 SCANLEARN DEBUG');
+    debugPrint('════════════════════════════════════════');
+    debugPrint('📌 Função: _generateSummary()');
+    debugPrint('📌 Modelo: gemini-3.6-flash');
+    debugPrint('🔑 API Key encontrada: ${apiKey.isNotEmpty}');
+    debugPrint('🔐 Tamanho da API Key: ${apiKey.length}');
+    debugPrint('════════════════════════════════════════');
+
+    try {
+      List<Map<String, dynamic>> promptParts = [];
+      
+      for (int i = 0; i < _imageBytesList.length; i++) {
+        promptParts.add({
+          "inlineData": {
+            "mimeType": _mimeTypesList[i],
+            "data": base64Encode(_imageBytesList[i])
+          }
+        });
+      }
+      
+      promptParts.add({
+        "text": "Aja como um professor especialista. Analise as imagens anexadas, que são páginas de material de estudo. Escreva um resumo estruturado, claro e detalhado sobre o conteúdo. Use parágrafos e tópicos se necessário para facilitar a leitura. Retorne apenas o texto do resumo, sem formatação JSON, pronto para ser impresso."
+      });
+
+      final Map<String, dynamic> payload = {
+        "contents": [{"role": "user", "parts": promptParts}],
+        "generationConfig": {
+          "responseMimeType": "text/plain",
+          "temperature": 0.3,
+        }
+      };
+
+
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      );
+
+      debugPrint('════════════════════════════════════════');
+      debugPrint('📡 RESPOSTA DO GEMINI');
+      debugPrint('════════════════════════════════════════');
+      debugPrint('📊 Status Code: ${response.statusCode}');
+      debugPrint('📦 Body recebido:');
+      debugPrint(response.body);
+      debugPrint('════════════════════════════════════════');
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        final String textResponse = data['candidates'][0]['content']['parts'][0]['text'];
+
+        setState(() {
+          _currentState = AppState.upload;
+        });
+
+        if (mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PdfPreviewScreen(summaryText: textResponse),
+            ),
+          );
+        }
+
+      } else {
+        throw Exception(
+          'Erro na API: ${response.statusCode}\n${response.body}',
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = "Falha ao gerar o resumo. Detalhes: $e";
+        _currentState = AppState.upload;
+      });
+    }
   }
 
   Future<void> _generateQuiz() async {
@@ -151,8 +249,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       _errorMessage = null;
     });
 
-    // Puxa a chave de forma segura do arquivo .env
-    final String apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
+    final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
 
     if (apiKey.isEmpty) {
       setState(() {
@@ -162,12 +259,23 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       return;
     }
 
-    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=$apiKey';
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
+
+    debugPrint('════════════════════════════════════════');
+    debugPrint('🚀 SCANLEARN DEBUG');
+    debugPrint('════════════════════════════════════════');
+    debugPrint('📌 Função: _generateQuiz()');
+    debugPrint('📌 Modelo: gemini-3.6-flash');
+    debugPrint('🔑 API Key encontrada: ${apiKey.isNotEmpty}');
+    debugPrint('🔐 Tamanho da API Key: ${apiKey.length}');
+    debugPrint('🖼️ Quantidade de imagens: ${_imageBytesList.length}');
+    debugPrint('❓ Quantidade de questões: $_numberOfQuestions');
+    debugPrint('📚 Nível: $_difficultyLevel');
+    debugPrint('════════════════════════════════════════');
 
     try {
       List<Map<String, dynamic>> promptParts = [];
-
-      // Adiciona cada imagem processada na lista de requisição
+      
       for (int i = 0; i < _imageBytesList.length; i++) {
         promptParts.add({
           "inlineData": {
@@ -176,19 +284,13 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
           }
         });
       }
-
-      // Adiciona o texto de instrução no final
+      
       promptParts.add({
         "text": "Aja como um professor especialista criando material didático. Analise as imagens anexadas, que representam páginas de um material de estudo. Crie um quiz de múltipla escolha com $_numberOfQuestions perguntas com nível de dificuldade $_difficultyLevel baseadas puramente no conteúdo destas imagens. Se o nível for Simples foque no mais básico, se for Avançado crie pegadinhas e exija raciocínio profundo. Retorne o resultado estritamente no formato JSON requisitado."
       });
 
       final Map<String, dynamic> payload = {
-        "contents": [
-          {
-            "role": "user",
-            "parts": promptParts
-          }
-        ],
+        "contents": [{"role": "user", "parts": promptParts}],
         "generationConfig": {
           "responseMimeType": "application/json",
           "temperature": 0.2,
@@ -218,6 +320,14 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
         body: jsonEncode(payload),
       );
 
+      debugPrint('════════════════════════════════════════');
+      debugPrint('📡 RESPOSTA DO GEMINI - QUIZ');
+      debugPrint('════════════════════════════════════════');
+      debugPrint('📊 Status Code: ${response.statusCode}');
+      debugPrint('📦 Body recebido:');
+      debugPrint(response.body);
+      debugPrint('════════════════════════════════════════');
+
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(response.body);
         final String textResponse = data['candidates'][0]['content']['parts'][0]['text'];
@@ -233,15 +343,170 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
             _currentState = AppState.upload;
           }
         });
+      } else if (response.statusCode == 429) {
+        // Tratamento amigável e específico para o limite de cota
+        throw Exception('Limite de uso esgotado! A cota gratuita da Inteligência Artificial chegou ao fim. Por favor, aguarde ou tente novamente amanhã.');
+      } else if (response.statusCode == 503) {
+        throw Exception('Os servidores da Google estão sobrecarregados no momento. Aguarde alguns instantes e tente novamente.');
       } else {
-        throw Exception('Erro na API: ${response.statusCode}');
+        String mensagemAmigavel = 'Erro desconhecido na API: ${response.statusCode}';
+        try {
+          final erroJson = jsonDecode(response.body);
+          if (erroJson['error'] != null && erroJson['error']['message'] != null) {
+            mensagemAmigavel = erroJson['error']['message'];
+          }
+        } catch (_) {}
+        throw Exception('Falha na comunicação com a IA.\nDetalhe: $mensagemAmigavel');
       }
     } catch (e) {
       setState(() {
-        _errorMessage = "Falha ao gerar o quiz. Verifique sua conexão e se a foto está legível. Detalhes: $e";
+        // Limpa a palavra técnica "Exception: " da tela para o usuário final
+        String erroLimpo = e.toString().replaceAll('Exception: ', '');
+        _errorMessage = erroLimpo;
         _currentState = AppState.upload;
       });
     }
+  }
+
+  Future<void> _generateQuizSummary() async {
+    setState(() {
+      _currentState = AppState.analyzingResults;
+      _errorMessage = null;
+    });
+
+    final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
+
+    try {
+      int score = 0;
+      String performanceReport = "O aluno respondeu um quiz de $_numberOfQuestions questões (nível $_difficultyLevel). Desempenho:\n";
+      for (int i = 0; i < _quizData.length; i++) {
+        final q = _quizData[i];
+        final userAns = _userAnswers[i] ?? "Não respondeu";
+        final isCorrect = userAns == q.correctAnswer;
+        if (isCorrect) score++;
+        performanceReport += "Q${i+1}: ${q.question} | Correta: ${q.correctAnswer} | Aluno: $userAns (${isCorrect ? 'Acertou' : 'Errou'})\n";
+      }
+
+      performanceReport += "\nCom base nisso ($score/${_quizData.length} acertos), forneça um feedback pedagógico personalizado e encorajador.";
+
+      final Map<String, dynamic> payload = {
+        "contents": [{"role": "user", "parts": [{"text": performanceReport + "\nRetorne estritamente em formato JSON contendo uma chave 'teacher_feedback' com a mensagem de feedback."}]}],
+        "generationConfig": {
+          "responseMimeType": "application/json",
+          "temperature": 0.3,
+          "responseSchema": {
+            "type": "OBJECT",
+            "properties": {
+              "teacher_feedback": {"type": "STRING", "description": "Mensagem de feedback do professor"}
+            },
+            "required": ["teacher_feedback"]
+          }
+        }
+      };
+
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      );
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        final String textResponse = data['candidates'][0]['content']['parts'][0]['text'];
+
+        setState(() {
+          _currentState = AppState.upload;
+        });
+
+        if (mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PdfPreviewScreen(summaryText: textResponse),
+            ),
+          );
+        }
+
+      } else if (response.statusCode == 429) {
+        // Tratamento amigável e específico para o limite de cota
+        throw Exception('Limite de uso esgotado! A cota gratuita da Inteligência Artificial chegou ao fim. Por favor, aguarde ou tente novamente amanhã.');
+      } else if (response.statusCode == 503) {
+        throw Exception('Os servidores da Google estão sobrecarregados no momento. Aguarde alguns instantes e tente novamente.');
+      } else {
+        String mensagemAmigavel = 'Erro desconhecido na API: ${response.statusCode}';
+        try {
+          final erroJson = jsonDecode(response.body);
+          if (erroJson['error'] != null && erroJson['error']['message'] != null) {
+            mensagemAmigavel = erroJson['error']['message'];
+          }
+        } catch (_) {}
+        throw Exception('Falha na comunicação com a IA.\nDetalhe: $mensagemAmigavel');
+      }
+    } catch (e) {
+      setState(() {
+        // Limpa a palavra técnica "Exception: " da tela para o usuário final
+        String erroLimpo = e.toString().replaceAll('Exception: ', '');
+        _errorMessage = erroLimpo;
+        _currentState = AppState.upload;
+      });
+    }
+  }
+
+  void _showAboutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          title: const Text(
+            'Sobre',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'O ScanLearn.ai é o motor dos seus estudos. Um assistente de inteligência artificial criado para simplificar seu aprendizado, transformar anotações em quizzes interativos e impulsionar seus resultados em um só lugar.',
+                style: TextStyle(fontSize: 15, height: 1.4),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Icon(Icons.link, color: Colors.grey.shade700),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'ScanLearn.ai',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 32),
+              Center(
+                child: Text(
+                  'Versão do App: 1.0.2+6',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text(
+                'Fechar',
+                style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Widget _buildUploadSection() {
@@ -263,101 +528,97 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                   Icon(Icons.cloud_upload_rounded, size: 64, color: Colors.indigo.shade300),
                   const SizedBox(height: 16),
                   const Text(
-                    'Transforme suas anotações em Quiz',
+                    'Transforme suas anotações com IA',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Tire uma foto da página do livro, apostila ou caderno. Nossa IA vai ler o conteúdo e gerar um quiz na hora!',
+                    'Tire fotos do seu material e escolha se deseja gerar um Quiz para se testar ou um Resumo em PDF para salvar!',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.grey.shade600),
                   ),
-
+                  
                   const SizedBox(height: 24),
-
-                  // Seleção de Quantidade de Questões
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  
+                  Wrap(
+                    spacing: 16,
+                    runSpacing: 16,
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Text(
-                        'Quantidade:',
-                        style: TextStyle(fontSize: 16, color: Colors.grey.shade700, fontWeight: FontWeight.w500),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Questões:',
+                            style: TextStyle(fontSize: 14, color: Colors.grey.shade700, fontWeight: FontWeight.w500),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.indigo.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.indigo.shade100),
+                            ),
+                            child: DropdownButton<int>(
+                              value: _numberOfQuestions,
+                              underline: const SizedBox(),
+                              icon: const Icon(Icons.arrow_drop_down, color: Colors.indigo),
+                              style: TextStyle(color: Colors.indigo.shade900, fontWeight: FontWeight.bold, fontSize: 14),
+                              items: [5, 10, 15, 20].map((int value) {
+                                return DropdownMenuItem<int>(
+                                  value: value,
+                                  child: Text('$value'),
+                                );
+                              }).toList(),
+                              onChanged: (int? newValue) {
+                                if (newValue != null) setState(() => _numberOfQuestions = newValue);
+                              },
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 16),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.indigo.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.indigo.shade100),
-                        ),
-                        child: DropdownButton<int>(
-                          value: _numberOfQuestions,
-                          underline: const SizedBox(),
-                          icon: const Icon(Icons.arrow_drop_down, color: Colors.indigo),
-                          style: TextStyle(color: Colors.indigo.shade900, fontWeight: FontWeight.bold, fontSize: 16),
-                          items: [5, 10, 15, 20].map((int value) {
-                            return DropdownMenuItem<int>(
-                              value: value,
-                              child: Text('$value'),
-                            );
-                          }).toList(),
-                          onChanged: (int? newValue) {
-                            if (newValue != null) {
-                              setState(() {
-                                _numberOfQuestions = newValue;
-                              });
-                            }
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // Seleção de Dificuldade
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        'Dificuldade:',
-                        style: TextStyle(fontSize: 16, color: Colors.grey.shade700, fontWeight: FontWeight.w500),
-                      ),
-                      const SizedBox(width: 16),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.orange.shade100),
-                        ),
-                        child: DropdownButton<String>(
-                          value: _difficultyLevel,
-                          underline: const SizedBox(),
-                          icon: Icon(Icons.arrow_drop_down, color: Colors.orange.shade800),
-                          style: TextStyle(color: Colors.orange.shade900, fontWeight: FontWeight.bold, fontSize: 16),
-                          items: ['Simples', 'Intermediário', 'Avançado'].map((String value) {
-                            return DropdownMenuItem<String>(
-                              value: value,
-                              child: Text(value),
-                            );
-                          }).toList(),
-                          onChanged: (String? newValue) {
-                            if (newValue != null) {
-                              setState(() {
-                                _difficultyLevel = newValue;
-                              });
-                            }
-                          },
-                        ),
+                      
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Nível:',
+                            style: TextStyle(fontSize: 14, color: Colors.grey.shade700, fontWeight: FontWeight.w500),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.orange.shade100),
+                            ),
+                            child: DropdownButton<String>(
+                              value: _difficultyLevel,
+                              underline: const SizedBox(),
+                              icon: Icon(Icons.arrow_drop_down, color: Colors.orange.shade800),
+                              style: TextStyle(color: Colors.orange.shade900, fontWeight: FontWeight.bold, fontSize: 14),
+                              items: ['Simples', 'Intermediário', 'Avançado'].map((String value) {
+                                return DropdownMenuItem<String>(
+                                  value: value,
+                                  child: Text(value),
+                                );
+                              }).toList(),
+                              onChanged: (String? newValue) {
+                                if (newValue != null) setState(() => _difficultyLevel = newValue);
+                              },
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
 
                   const SizedBox(height: 32),
-
+                  
                   if (_imageBytesList.isNotEmpty) ...[
                     Container(
                       alignment: Alignment.centerLeft,
@@ -416,7 +677,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                             icon: const Icon(Icons.add_photo_alternate),
                             label: const Text('Mais Fotos'),
                             style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             ),
                           ),
@@ -428,23 +689,39 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                             icon: const Icon(Icons.add_a_photo),
                             label: const Text('Câmera'),
                             style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             ),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 24),
+                    
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
                         onPressed: _generateQuiz,
                         icon: const Icon(Icons.play_arrow),
-                        label: const Text('Gerar Quiz'),
+                        label: const Text('Gerar Quiz Interativo', style: TextStyle(fontSize: 16)),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.indigo,
                           foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _generateSummary,
+                        icon: const Icon(Icons.picture_as_pdf),
+                        label: const Text('Gerar Resumo em PDF', style: TextStyle(fontSize: 16)),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red.shade700,
+                          side: BorderSide(color: Colors.red.shade200, width: 2),
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
@@ -506,21 +783,22 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
     );
   }
 
-  Widget _buildLoadingSection() {
+  Widget _buildLoadingSection(String title, String subtitle) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const CircularProgressIndicator(),
           const SizedBox(height: 24),
-          const Text(
-            'Analisando o material...',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
           Text(
-            'Criando perguntas de nível $_difficultyLevel...',
+            subtitle,
             style: TextStyle(color: Colors.grey.shade600),
+            textAlign: TextAlign.center,
           ),
         ],
       ),
@@ -568,7 +846,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                     style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, height: 1.4),
                   ),
                   const SizedBox(height: 32),
-
+                  
                   ...question.options.map((option) {
                     final isSelected = _userAnswers[_currentQuestionIdx] == option;
                     return Padding(
@@ -613,7 +891,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                       ),
                     );
                   }),
-
+                  
                   const SizedBox(height: 24),
                   Row(
                     children: [
@@ -638,16 +916,14 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                         child: ElevatedButton(
                           onPressed: hasAnswered
                               ? () {
-                            if (_currentQuestionIdx < _quizData.length - 1) {
-                              setState(() {
-                                _currentQuestionIdx++;
-                              });
-                            } else {
-                              setState(() {
-                                _currentState = AppState.results;
-                              });
-                            }
-                          }
+                                  if (_currentQuestionIdx < _quizData.length - 1) {
+                                    setState(() {
+                                      _currentQuestionIdx++;
+                                    });
+                                  } else {
+                                    _generateQuizSummary();
+                                  }
+                                }
                               : null,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.indigo,
@@ -656,9 +932,9 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
                           child: Text(
-                            _currentQuestionIdx < _quizData.length - 1
-                                ? 'Próxima Questão'
-                                : 'Finalizar e Ver Resultados',
+                            _currentQuestionIdx < _quizData.length - 1 
+                              ? 'Próxima Questão' 
+                              : 'Finalizar e Ver Resultados',
                           ),
                         ),
                       ),
@@ -687,6 +963,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(vertical: 24),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Container(
                 padding: const EdgeInsets.all(32),
@@ -698,20 +975,27 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                 child: Column(
                   children: [
                     CircleAvatar(
-                      radius: 50,
+                      radius: 45,
                       backgroundColor: Colors.indigo,
                       child: Text(
                         '$score/${_quizData.length}',
-                        style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white),
+                        style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
                       ),
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'Quiz Finalizado!',
-                      style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                      'Pontuação Final',
+                      style: TextStyle(fontSize: 16, color: Colors.grey, fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      score >= (_quizData.length / 2) ? 'Você está indo muito bem! Continue assim.' : 'Bom esforço! Continue revisando os pontos.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 32),
 
+                    // --- LISTA DE QUESTÕES (GABARITO DETALHADO) ---
                     ...List.generate(_quizData.length, (index) {
                       final q = _quizData[index];
                       final userAnswer = _userAnswers[index];
@@ -786,7 +1070,34 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                       );
                     }),
 
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 16),
+
+                    // --- FEEDBACK GERAL DO PROFESSOR IA (LOGO ABAIXO DO GABARITO) ---
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.indigo.shade50,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.indigo.shade100),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '💡 Feedback do Professor AI',
+                            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo, fontSize: 16),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _teacherFeedback,
+                            style: TextStyle(color: Colors.indigo.shade900, height: 1.4, fontSize: 15),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
@@ -794,8 +1105,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                         icon: const Icon(Icons.refresh),
                         label: const Text('Escanear Outro Capítulo'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.indigo.shade50,
-                          foregroundColor: Colors.indigo.shade700,
+                          backgroundColor: Colors.indigo,
+                          foregroundColor: Colors.white,
                           elevation: 0,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -829,6 +1140,14 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
         backgroundColor: Colors.white,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline, color: Colors.indigo),
+            onPressed: () => _showAboutDialog(context),
+            tooltip: 'Sobre o App',
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -837,13 +1156,45 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
             case AppState.upload:
               return _buildUploadSection();
             case AppState.generating:
-              return _buildLoadingSection();
+              return _buildLoadingSection('Analisando o material...', 'Criando perguntas de nível $_difficultyLevel...');
+            case AppState.generatingSummary:
+              return _buildLoadingSection('Lendo o conteúdo...', 'A IA está digitando um resumo detalhado para o seu PDF...');
             case AppState.quiz:
               return _buildQuizSection();
+            case AppState.analyzingResults:
+              return _buildLoadingSection('Avaliando seu desempenho...', 'O professor IA está preparando seu feedback personalizado...');
             case AppState.results:
               return _buildResultsSection();
           }
         }(),
+      ),
+    );
+  }
+}
+
+class PdfPreviewScreen extends StatelessWidget {
+  final String summaryText;
+
+  const PdfPreviewScreen({super.key, required this.summaryText});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Seu Resumo em PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        centerTitle: true,
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+      ),
+      body: PdfPreview(
+        build: (format) => PdfService.generateSummaryPdf(format, summaryText),
+        allowPrinting: true,
+        allowSharing: true,
+        canChangeOrientation: false,
+        canChangePageFormat: false,
+        pdfFileName: 'Resumo_ScanLearn.pdf',
+        previewPageMargin: const EdgeInsets.all(12),
+        scrollViewDecoration: BoxDecoration(color: Colors.grey.shade100),
       ),
     );
   }

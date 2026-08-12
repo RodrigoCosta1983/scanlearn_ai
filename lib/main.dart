@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:printing/printing.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'pdf_service.dart';
 
@@ -62,10 +63,13 @@ class ScanLearnHomePage extends StatefulWidget {
   State<ScanLearnHomePage> createState() => _ScanLearnHomePageState();
 }
 
-enum AppState { upload, generating, generatingSummary, quiz, analyzingResults, results }
+enum AppState { upload, generating, generatingSummary, generatingTutorGuide, quiz, analyzingResults, results }
 
 class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
   AppState _currentState = AppState.upload;
+
+  // Variável GLOBAL para controlar o modelo ativo (Plano A e Plano B)
+  String _currentModel = 'gemini-3.5-flash-lite';
   
   List<Uint8List> _imageBytesList = [];
   List<String> _mimeTypesList = [];
@@ -160,7 +164,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       return;
     }
 
-    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey';
+
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/$_currentModel:generateContent?key=$apiKey';
 
 
     debugPrint('════════════════════════════════════════');
@@ -241,6 +246,105 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
     }
   }
 
+  Future<void> _generateTutorGuide() async {
+    if (_imageBytesList.isEmpty) return;
+
+    setState(() {
+      _currentState = AppState.generatingTutorGuide;
+      _errorMessage = null;
+    });
+
+    final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
+
+    if (apiKey.isEmpty) {
+      setState(() {
+        _errorMessage = "API Key não encontrada. Verifique o arquivo .env.";
+        _currentState = AppState.upload;
+      });
+      return;
+    }
+
+    // Usando a variável global dinâmica para garantir o fallback!
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/$_currentModel:generateContent?key=$apiKey';
+
+    try {
+      List<Map<String, dynamic>> promptParts = [];
+
+      for (int i = 0; i < _imageBytesList.length; i++) {
+        promptParts.add({
+          "inlineData": {
+            "mimeType": _mimeTypesList[i],
+            "data": base64Encode(_imageBytesList[i])
+          }
+        });
+      }
+
+      promptParts.add({
+        "text": "Aja como um especialista em pedagogia e crie um 'Guia do Tutor' para os pais ajudarem seus filhos a estudar a matéria das imagens anexadas. O guia deve ser encorajador e conter:\n1. Resumo em 1 minuto: O conceito principal explicado de forma extremamente mastigada e simples para o adulto entender rapidamente.\n2. Analogias do Dia a Dia: Duas comparações simples e didáticas para o pai usar ao explicar o assunto à criança.\n3. Perguntas de Sondagem: Três perguntas informais (com as respostas logo abaixo) para o pai fazer durante uma conversa e testar o conhecimento do filho.\nRetorne apenas o texto do guia, de forma estruturada e bem espaçada, sem blocos de código ou formato JSON, pronto para ser impresso no PDF."
+      });
+
+      final Map<String, dynamic> payload = {
+        "contents": [{"role": "user", "parts": promptParts}],
+        "generationConfig": {
+          "responseMimeType": "text/plain",
+          "temperature": 0.4,
+        }
+      };
+
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      );
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        final String textResponse = data['candidates'][0]['content']['parts'][0]['text'];
+
+        setState(() {
+          _currentState = AppState.upload;
+        });
+
+        if (mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PdfPreviewScreen(summaryText: textResponse),
+            ),
+          );
+        }
+
+      } else if (response.statusCode == 429) {
+        if (_currentModel == 'gemini-3.5-flash-lite') {
+          debugPrint('⚠️ Cota do 3.5 esgotada. Trocando para 3.1 Flash Lite e tentando novamente...');
+          setState(() {
+            _currentModel = 'gemini-3.1-flash-lite';
+          });
+          return _generateTutorGuide(); // Retenta automaticamente com o modelo reserva!
+        } else {
+          throw Exception('Limite incrível de uso esgotado! As 1.000 requisições gratuitas diárias da IA chegaram ao fim. Tente novamente amanhã.');
+        }
+      } else if (response.statusCode == 503) {
+        throw Exception('Os servidores da Google estão sobrecarregados no momento. Aguarde alguns instantes e tente novamente.');
+      } else {
+        String mensagemAmigavel = 'Erro desconhecido na API: ${response.statusCode}';
+        try {
+          final erroJson = jsonDecode(response.body);
+          if (erroJson['error'] != null && erroJson['error']['message'] != null) {
+            mensagemAmigavel = erroJson['error']['message'];
+          }
+        } catch (_) {}
+        throw Exception('Falha na comunicação com a IA.\nDetalhe: $mensagemAmigavel');
+      }
+    } catch (e) {
+      setState(() {
+        String erroLimpo = e.toString().replaceAll('Exception: ', '');
+        _errorMessage = erroLimpo;
+        _currentState = AppState.upload;
+      });
+    }
+  }
+
   Future<void> _generateQuiz() async {
     if (_imageBytesList.isEmpty) return;
 
@@ -259,7 +363,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       return;
     }
 
-    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey';
+
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/$_currentModel:generateContent?key=$apiKey';
 
 
     debugPrint('════════════════════════════════════════');
@@ -345,9 +450,16 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
           }
         });
       } else if (response.statusCode == 429) {
-        // Tratamento amigável e específico para o limite de cota
-        throw Exception('Limite de uso esgotado! A cota gratuita da Inteligência Artificial chegou ao fim. Por favor, aguarde ou tente novamente amanhã.');
-      } else if (response.statusCode == 503) {
+        if (_currentModel == 'gemini-3.5-flash-lite') {
+          debugPrint('⚠️ Cota do 3.5 esgotada. Trocando para 3.1 Flash Lite e tentando novamente...');
+          setState(() {
+            _currentModel = 'gemini-3.1-flash-lite';
+          });
+          return _generateQuiz(); // Chama a própria função novamente
+        } else {
+          throw Exception('Limite incrível de uso esgotado! As 1.000 requisições gratuitas diárias da IA chegaram ao fim. Tente novamente amanhã.');
+        }
+      }else if (response.statusCode == 503) {
         throw Exception('Os servidores da Google estão sobrecarregados no momento. Aguarde alguns instantes e tente novamente.');
       } else {
         String mensagemAmigavel = 'Erro desconhecido na API: ${response.statusCode}';
@@ -376,8 +488,9 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
     });
 
     final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
-    //final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$apiKey';
-    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey';
+
+
+    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/$_currentModel:generateContent?key=$apiKey';
 
     try {
       int score = 0;
@@ -423,23 +536,42 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
         try {
           // Tenta decodificar o JSON para extrair apenas a mensagem do professor
           final Map<String, dynamic> jsonResult = jsonDecode(textResponse);
+          String rawFeedback = jsonResult['teacher_feedback'] ?? "Aqui está o seu resultado!";
+
+          // Decodificação Segura: Tenta traduzir. Se falhar (ex: por causa de um "100%"), mantém o texto original.
+          String finalFeedback = rawFeedback;
+          try {
+            finalFeedback = Uri.decodeFull(rawFeedback);
+          } catch (_) {}
 
           setState(() {
-            // Salva o feedback e muda a tela para o gabarito (results)
-            _teacherFeedback = jsonResult['teacher_feedback'] ?? "Aqui está o seu resultado!";
+            // Salva o feedback limpo e muda a tela para o gabarito (results)
+            _teacherFeedback = finalFeedback;
             _currentState = AppState.results;
           });
         } catch (e) {
-          // Fallback de segurança: se a IA não mandar em JSON, exibe o texto bruto mesmo assim
+          // Fallback de segurança caso a IA não mande em formato JSON
+          String finalFeedback = textResponse;
+          try {
+            finalFeedback = Uri.decodeFull(textResponse);
+          } catch (_) {}
+
           setState(() {
-            _teacherFeedback = textResponse;
+            _teacherFeedback = finalFeedback;
             _currentState = AppState.results;
           });
         }
 
       } else if (response.statusCode == 429) {
-        // Tratamento amigável e específico para o limite de cota
-        throw Exception('Limite de uso esgotado! A cota gratuita da Inteligência Artificial chegou ao fim. Por favor, aguarde ou tente novamente amanhã.');
+        if (_currentModel == 'gemini-3.5-flash-lite') {
+          debugPrint('⚠️ Cota do 3.5 esgotada. Trocando para 3.1 Flash Lite e tentando novamente...');
+          setState(() {
+            _currentModel = 'gemini-3.1-flash-lite';
+          });
+          return _generateQuizSummary(); // AGORA SIM! Chama a própria função novamente
+        } else {
+          throw Exception('Limite incrível de uso esgotado! As 1.000 requisições gratuitas diárias da IA chegaram ao fim. Tente novamente amanhã.');
+        }
       } else if (response.statusCode == 503) {
         throw Exception('Os servidores da Google estão sobrecarregados no momento. Aguarde alguns instantes e tente novamente.');
       } else {
@@ -485,20 +617,50 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                 style: TextStyle(fontSize: 15, height: 1.4),
               ),
               const SizedBox(height: 24),
-              Row(
-                children: [
-                  Icon(Icons.link, color: Colors.grey.shade700),
-                  const SizedBox(width: 12),
-                  const Text(
-                    'ScanLearn.ai',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () async {
+                  // Coloque o link do seu portfólio ou LinkedIn aqui
+                  final Uri url = Uri.parse('#');
+
+                  if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+                    debugPrint('Não foi possível abrir o link: $url');
+                  }
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: Row(
+                    children: [
+                      Icon(Icons.language, color: Colors.indigo.shade600, size: 28),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Desenvolvido por',
+                            style: TextStyle(fontSize: 14, color: Colors.black87),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Rodrigo Costa',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.indigo.shade700,
+                              decoration: TextDecoration.underline,
+                              decorationColor: Colors.indigo.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
               const SizedBox(height: 32),
               Center(
                 child: Text(
-                  'Versão do App: 1.0.1+8',
+                  'Versão do App: 1.0.1+9',
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                 ),
               ),
@@ -731,6 +893,21 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.red.shade700,
                           side: BorderSide(color: Colors.red.shade200, width: 2),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _generateTutorGuide,
+                        icon: const Icon(Icons.family_restroom),
+                        label: const Text('Gerar Guia para os Pais', style: TextStyle(fontSize: 16)),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.teal.shade700,
+                          side: BorderSide(color: Colors.teal.shade200, width: 2),
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
@@ -1174,6 +1351,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
               return _buildLoadingSection('Avaliando seu desempenho...', 'O professor IA está preparando seu feedback personalizado...');
             case AppState.results:
               return _buildResultsSection();
+            case AppState.generatingTutorGuide:
+              return _buildLoadingSection('Preparando o Guia...', 'A IA está traduzindo a matéria em dicas fáceis para você ensinar...');
           }
         }(),
       ),

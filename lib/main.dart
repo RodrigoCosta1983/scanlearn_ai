@@ -28,6 +28,8 @@
 | • Recorte e orientação inteligente de imagens do material.
 | • Cadeias de fallback entre modelos Gemini.
 | • Tratamento de erros, timeout e indisponibilidade temporária da API.
+| • Firebase Analytics V1.0 para acompanhamento de uso do aplicativo.
+| • Espelhamento dos eventos do Analytics no debugPrint durante desenvolvimento.
 |
 | QUIZ:
 | gemini-3.5-flash-lite
@@ -44,8 +46,9 @@
 | gemini-3.1-flash-lite
 |
 | Versão atual:
-| Quiz   → Motor Pedagógico V2.2
-| Resumo → Inteligência Visual V2-B.1
+| Quiz      → Motor Pedagógico V2.2
+| Resumo    → Inteligência Visual V2-B.1
+| Analytics → Firebase Analytics V1.0
 |
 |--------------------------------------------------------------------------
 */
@@ -68,9 +71,45 @@ import 'package:file_picker/file_picker.dart'; // O novo pacote
 import 'pdf_service.dart';
 import 'study_summary.dart';
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
+
+import 'firebase_options.dart';
+
+late final FirebaseAnalytics analytics;
+
+Future<void> _logAnalyticsEvent(
+  String name, {
+  Map<String, Object>? parameters,
+}) async {
+  try {
+    await analytics.logEvent(
+      name: name,
+      parameters: parameters,
+    );
+
+    debugPrint('📊 ANALYTICS → $name');
+    if (parameters != null && parameters.isNotEmpty) {
+      debugPrint('   📦 $parameters');
+    }
+  } catch (e) {
+    // Analytics nunca deve interromper Quiz, Resumo ou navegação do app.
+    debugPrint('⚠️ ANALYTICS → falha ao registrar $name: $e');
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   await dotenv.load(fileName: ".env");
+
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  analytics = FirebaseAnalytics.instance;
+  debugPrint('📊 Firebase Analytics inicializado com sucesso.');
+
   runApp(const ScanLearnApp());
 }
 
@@ -175,6 +214,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
         allowMultiple: true,
       );
 
+      int addedCount = 0;
+
       // Verificamos se o usuário não cancelou a seleção
       if (result != null && result.files.isNotEmpty) {
         for (var file in result.files) {
@@ -186,8 +227,20 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
               _mimeTypesList.add('application/pdf');
               _errorMessage = null;
             });
+            addedCount++;
           }
         }
+      }
+
+      if (addedCount > 0) {
+        await _logAnalyticsEvent(
+          'material_added',
+          parameters: {
+            'source': 'pdf',
+            'file_count': addedCount,
+            'total_files': _imageBytesList.length,
+          },
+        );
       }
     } catch (e) {
       setState(() {
@@ -213,6 +266,15 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
               _errorMessage = null;
             });
           }
+
+          await _logAnalyticsEvent(
+            'material_added',
+            parameters: {
+              'source': 'gallery',
+              'file_count': images.length,
+              'total_files': _imageBytesList.length,
+            },
+          );
         }
       } else {
         final XFile? image = await _picker.pickImage(source: source);
@@ -227,6 +289,15 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
             _mimeTypesList.add(mime);
             _errorMessage = null;
           });
+
+          await _logAnalyticsEvent(
+            'material_added',
+            parameters: {
+              'source': 'camera',
+              'file_count': 1,
+              'total_files': _imageBytesList.length,
+            },
+          );
         }
       }
     } catch (e) {
@@ -545,6 +616,13 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       _currentState = AppState.generatingSummary;
       _errorMessage = null;
     });
+
+    await _logAnalyticsEvent(
+      'summary_started',
+      parameters: {
+        'file_count': _imageBytesList.length,
+      },
+    );
 
     final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
 
@@ -899,6 +977,18 @@ Retorne estritamente o JSON solicitado pelo schema.
         }
         debugPrint('════════════════════════════════════════════════════');
 
+        await _logAnalyticsEvent(
+          'summary_generated',
+          parameters: {
+            'model': summaryResult.model,
+            'attempt': summaryResult.attempt,
+            'sections': summary.sections.length,
+            'visual_sections': visualSections.length,
+            'source_visuals': reusedSections.length,
+            'structured_visuals': generatedSections.length,
+          },
+        );
+
         final preparedSourceVisuals = await _prepareSummarySourceVisuals(summary);
 
         setState(() {
@@ -943,6 +1033,13 @@ Retorne estritamente o JSON solicitado pelo schema.
         );
       }
     } catch (e) {
+      await _logAnalyticsEvent(
+        'summary_generation_failed',
+        parameters: {
+          'file_count': _imageBytesList.length,
+        },
+      );
+
       setState(() {
         final erroLimpo = e.toString().replaceAll('Exception: ', '');
         _errorMessage = 'Falha ao gerar o resumo. Detalhes: $erroLimpo';
@@ -1542,6 +1639,15 @@ Se a resposta da pergunta 1 for SIM, da pergunta 6 for SIM, ou qualquer uma das 
       _quizLoadingSubtitle = 'Criando perguntas de nível $_difficultyLevel...';
     });
 
+    await _logAnalyticsEvent(
+      'quiz_started',
+      parameters: {
+        'difficulty': _difficultyLevel,
+        'question_count': _numberOfQuestions,
+        'file_count': _imageBytesList.length,
+      },
+    );
+
     final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
 
     if (apiKey.isEmpty) {
@@ -1756,6 +1862,19 @@ REGRAS GERAIS:
             _currentState = AppState.upload;
           }
         });
+
+        if (questions.isNotEmpty) {
+          await _logAnalyticsEvent(
+            'quiz_generated',
+            parameters: {
+              'difficulty': _difficultyLevel,
+              'question_count': questions.length,
+              'model': quizResult.model,
+              'attempt': quizResult.attempt,
+            },
+          );
+        }
+
         return;
       }
 
@@ -1788,6 +1907,15 @@ REGRAS GERAIS:
         'Falha na comunicação com a IA.\nDetalhe: $mensagemAmigavel',
       );
     } catch (e) {
+      await _logAnalyticsEvent(
+        'quiz_generation_failed',
+        parameters: {
+          'difficulty': _difficultyLevel,
+          'question_count': _numberOfQuestions,
+          'file_count': _imageBytesList.length,
+        },
+      );
+
       if (!mounted) return;
       setState(() {
         final erroLimpo = e.toString().replaceAll('Exception: ', '');
@@ -1803,6 +1931,27 @@ REGRAS GERAIS:
       _errorMessage = null;
     });
 
+    int score = 0;
+    for (int i = 0; i < _quizData.length; i++) {
+      if (_userAnswers[i] == _quizData[i].correctAnswer) {
+        score++;
+      }
+    }
+
+    final int scorePercent = _quizData.isEmpty
+        ? 0
+        : ((score / _quizData.length) * 100).round();
+
+    await _logAnalyticsEvent(
+      'quiz_completed',
+      parameters: {
+        'difficulty': _difficultyLevel,
+        'question_count': _quizData.length,
+        'correct_answers': score,
+        'score_percent': scorePercent,
+      },
+    );
+
     final String apiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').trim();
 
     if (apiKey.isEmpty) {
@@ -1815,7 +1964,6 @@ REGRAS GERAIS:
     }
 
     try {
-      int score = 0;
       String performanceReport =
           "O aluno respondeu um quiz de $_numberOfQuestions questões "
           "(nível $_difficultyLevel). Desempenho:\n";
@@ -1824,7 +1972,6 @@ REGRAS GERAIS:
         final q = _quizData[i];
         final userAns = _userAnswers[i] ?? "Não respondeu";
         final isCorrect = userAns == q.correctAnswer;
-        if (isCorrect) score++;
 
         performanceReport +=
             "Q${i + 1}: ${q.question} | Correta: ${q.correctAnswer} | "
@@ -1905,10 +2052,21 @@ REGRAS GERAIS:
           _teacherFeedback = finalFeedback;
           _currentState = AppState.results;
         });
+
+        await _logAnalyticsEvent(
+          'quiz_feedback_generated',
+          parameters: {
+            'model': feedbackResult.model,
+            'attempt': feedbackResult.attempt,
+          },
+        );
+
         return;
       }
 
       // Se o feedback falhar nos dois modelos, não bloqueia o resultado do aluno.
+      await _logAnalyticsEvent('quiz_feedback_failed');
+
       if (!mounted) return;
       setState(() {
         _teacherFeedback =
@@ -1920,6 +2078,7 @@ REGRAS GERAIS:
       // O placar não deve ser perdido por uma falha apenas no feedback da IA.
       if (!mounted) return;
       debugPrint('⚠️ Falha ao gerar feedback do quiz: $e');
+      await _logAnalyticsEvent('quiz_feedback_failed');
       setState(() {
         _teacherFeedback =
             "Seu resultado foi calculado normalmente. O feedback detalhado "
@@ -1994,7 +2153,7 @@ REGRAS GERAIS:
               const SizedBox(height: 32),
               Center(
                 child: Text(
-                  'Versão do App: 1.2.0+12',
+                  'Versão do App: 1.2.0+13',
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                 ),
               ),

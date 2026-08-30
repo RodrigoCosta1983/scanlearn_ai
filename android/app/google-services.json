@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "332977754266",
+    "project_id": "educa-plus-ai-app",
+    "storage_bucket": "educa-plus-ai-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:332977754266:android:339a1ce8db8537911f4f23",
+        "android_client_info": {
+          "package_name": "com.scanlearn_ai.app.scanlearn_ai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4C7gYZYKlrb1mQ_1WG8rJlh2a_s9eAX0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

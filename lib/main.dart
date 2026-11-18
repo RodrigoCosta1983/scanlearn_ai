@@ -31,13 +31,15 @@
 | • Firebase Analytics V1.0 para acompanhamento de uso do aplicativo.
 | • Espelhamento dos eventos do Analytics no debugPrint durante desenvolvimento.
 |
-| QUIZ:
+| QUIZ / FEEDBACK:
 | gemini-3.5-flash-lite
-|        ↓ fallback
+|        ↓
 | gemini-3.1-flash-lite
+|        ↓
+| gemini-3.8-flash
 |
 | RESUMO:
-| gemini-3.7-flash
+| gemini-3.8-flash
 |        ↓
 | gemini-3.6-flash
 |        ↓
@@ -70,6 +72,7 @@ import 'package:file_picker/file_picker.dart'; // O novo pacote
 
 import 'pdf_service.dart';
 import 'study_summary.dart';
+import 'gemini_config.dart';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
@@ -179,10 +182,10 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
   AppState _currentState = AppState.upload;
 
   // Variável GLOBAL para controlar o modelo ativo (Plano A e Plano B)
-  String _currentModel = 'gemini-3.5-flash-lite';
+  String _currentModel = GeminiConfig.tutorGuideModels.first;
 
-  List<Uint8List> _imageBytesList = [];
-  List<String> _mimeTypesList = [];
+  final List<Uint8List> _imageBytesList = [];
+  final List<String> _mimeTypesList = [];
 
   List<QuizQuestion> _quizData = [];
   int _currentQuestionIdx = 0;
@@ -201,7 +204,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
   String _difficultyLevel = 'Intermediário';
 
   // Apenas para diagnóstico do Resumo PDF. Não altera o fluxo do quiz.
-  String? _lastSummaryModel;
+  // String? _lastSummaryModel;
 
   final ImagePicker _picker = ImagePicker();
 
@@ -329,13 +332,6 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
     });
   }
 
-  static const List<String> _summaryModels = [
-    'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-3.5-flash-lite',
-    'gemini-3.1-flash-lite',
-  ];
-
   Future<GeminiCallResult> _callSummaryWithFallback({
     required String apiKey,
     required Map<String, dynamic> payload,
@@ -344,24 +340,26 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
     String? lastModel;
     Object? lastNetworkError;
 
-    const fallbackStatusCodes = {404, 408, 429, 500, 502, 503, 504};
+    const fallbackStatusCodes = GeminiConfig.fallbackStatusCodes;
 
     debugPrint('');
     debugPrint('════════════════════════════════════════════════════');
     debugPrint('📄 EDUCA+.AI — INÍCIO DA CADEIA DE RESUMO');
-    debugPrint('📚 Ordem: ${_summaryModels.join(' → ')}');
+    debugPrint('📚 Ordem: ${GeminiConfig.summaryModels.join(' → ')}');
     debugPrint('📎 Arquivos enviados: ${_imageBytesList.length}');
     debugPrint('════════════════════════════════════════════════════');
 
-    for (int i = 0; i < _summaryModels.length; i++) {
-      final model = _summaryModels[i];
+    for (int i = 0; i < GeminiConfig.summaryModels.length; i++) {
+      final model = GeminiConfig.summaryModels[i];
       final attempt = i + 1;
-      final apiUrl =
-          'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey';
+      final apiUrl = GeminiConfig.generateContentUrl(
+        model: model,
+        apiKey: apiKey,
+      );
 
       debugPrint('');
       debugPrint('────────────────────────────────────────────────────');
-      debugPrint('🚀 TENTATIVA $attempt/${_summaryModels.length}');
+      debugPrint('🚀 TENTATIVA $attempt/${GeminiConfig.summaryModels.length}');
       debugPrint('🤖 Modelo: $model');
       debugPrint('────────────────────────────────────────────────────');
 
@@ -374,7 +372,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
               headers: {'Content-Type': 'application/json'},
               body: jsonEncode(payload),
             )
-            .timeout(const Duration(seconds: 90));
+            .timeout(GeminiConfig.summaryTimeout);
 
         stopwatch.stop();
         lastResponse = response;
@@ -400,8 +398,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
         debugPrint('📦 Resposta da API: ${response.body}');
 
         if (fallbackStatusCodes.contains(response.statusCode)) {
-          if (attempt < _summaryModels.length) {
-            debugPrint('🔄 FALLBACK: tentando ${_summaryModels[i + 1]}...');
+          if (attempt < GeminiConfig.summaryModels.length) {
+            debugPrint('🔄 FALLBACK: tentando ${GeminiConfig.summaryModels[i + 1]}...');
           } else {
             debugPrint('⛔ Não existem mais modelos de fallback.');
           }
@@ -427,8 +425,8 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
         debugPrint('⏱️ Tempo: ${stopwatch.elapsedMilliseconds} ms');
         debugPrint('📦 Detalhe: ${_sanitizeLogDetail(e, apiKey)}');
 
-        if (attempt < _summaryModels.length) {
-          debugPrint('🔄 FALLBACK: tentando ${_summaryModels[i + 1]}...');
+        if (attempt < GeminiConfig.summaryModels.length) {
+          debugPrint('🔄 FALLBACK: tentando ${GeminiConfig.summaryModels[i + 1]}...');
           continue;
         }
       }
@@ -446,7 +444,7 @@ class _ScanLearnHomePageState extends State<ScanLearnHomePage> {
       return GeminiCallResult(
         response: lastResponse,
         model: lastModel,
-        attempt: _summaryModels.length,
+        attempt: GeminiConfig.summaryModels.length,
       );
     }
 
@@ -921,13 +919,13 @@ Retorne estritamente o JSON solicitado pelo schema.
       );
 
       final response = summaryResult.response;
-      _lastSummaryModel = summaryResult.model;
+      //_lastSummaryModel = summaryResult.model;
 
       debugPrint('');
       debugPrint('════════════════════════════════════════════════════');
       debugPrint('🏁 RESULTADO FINAL DO RESUMO');
       debugPrint('🤖 Modelo final: ${summaryResult.model}');
-      debugPrint('🔢 Tentativa: ${summaryResult.attempt}/${_summaryModels.length}');
+      debugPrint('🔢 Tentativa: ${summaryResult.attempt}/${GeminiConfig.summaryModels.length}');
       debugPrint('📡 Status final: ${response.statusCode}');
       debugPrint('════════════════════════════════════════════════════');
 
@@ -1048,6 +1046,7 @@ Retorne estritamente o JSON solicitado pelo schema.
     }
   }
 
+  // ignore: unused_element
   Future<void> _generateTutorGuide() async {
     if (_imageBytesList.isEmpty) return;
 
@@ -1066,7 +1065,10 @@ Retorne estritamente o JSON solicitado pelo schema.
       return;
     }
 
-    final String apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/$_currentModel:generateContent?key=$apiKey';
+    final String apiUrl = GeminiConfig.generateContentUrl(
+      model: _currentModel,
+      apiKey: apiKey,
+    );
 
     try {
       List<Map<String, dynamic>> promptParts = [];
@@ -1116,14 +1118,15 @@ Retorne estritamente o JSON solicitado pelo schema.
         }
 
       } else if (response.statusCode == 429) {
-        if (_currentModel == 'gemini-3.5-flash-lite') {
+        if (_currentModel == GeminiConfig.tutorGuideModels.first) {
           debugPrint('⚠️ Cota do 3.5 esgotada. Trocando para 3.1 Flash Lite e tentando novamente...');
           setState(() {
-            _currentModel = 'gemini-3.1-flash-lite';
+            _currentModel = GeminiConfig.tutorGuideModels[1];
           });
-          return _generateTutorGuide();
+          await _generateTutorGuide();
+return;
         } else {
-          throw Exception('Limite incrível de uso esgotado! As 1.000 requisições gratuitas diárias da IA chegaram ao fim. Tente novamente amanhã.');
+          throw Exception('Os modelos disponíveis atingiram o limite de uso no momento. Tente novamente mais tarde.');
         }
       } else if (response.statusCode == 503) {
         throw Exception('Os servidores da Google estão sobrecarregados no momento. Aguarde alguns instantes e tente novamente.');
@@ -1161,11 +1164,6 @@ Retorne estritamente o JSON solicitado pelo schema.
     return text;
   }
 
-  static const List<String> _quizModels = [
-    'gemini-3.5-flash-lite',
-    'gemini-3.1-flash-lite',
-  ];
-
   Future<GeminiCallResult> _callQuizWithFallback({
     required String apiKey,
     required Map<String, dynamic> payload,
@@ -1178,28 +1176,30 @@ Retorne estritamente o JSON solicitado pelo schema.
     final List<int> statusHistory = [];
 
     // Erros temporários / de limite que justificam tentar o modelo reserva.
-    const fallbackStatusCodes = {404, 408, 429, 500, 502, 503, 504};
-    const warningAfter = Duration(seconds: 45);
-    const realTimeout = Duration(seconds: 60);
-    const retry503Delay = Duration(seconds: 8);
+    const fallbackStatusCodes = GeminiConfig.fallbackStatusCodes;
+    const warningAfter = GeminiConfig.quizWarningAfter;
+    const realTimeout = GeminiConfig.quizTimeout;
+    const retry503Delay = GeminiConfig.retry503Delay;
 
     debugPrint('');
     debugPrint('════════════════════════════════════════════════════');
     debugPrint('🧠 EDUCA+.AI — INÍCIO DA CADEIA DO $operationName');
-    debugPrint('📚 Ordem: ${_quizModels.join(' → ')}');
+    debugPrint('📚 Ordem: ${GeminiConfig.quizModels.join(' → ')}');
     debugPrint('⏱️ Aviso visual: 45 s | Timeout real: 60 s por modelo');
-    debugPrint('🛟 Recuperação 503: 1 nova tentativa no 3.5 após 8 s se ambos retornarem 503');
+    debugPrint('🛟 Recuperação 503: 1 nova tentativa no 3.5 após 8 s se toda a cadeia retornar 503');
     debugPrint('════════════════════════════════════════════════════');
 
-    for (int i = 0; i < _quizModels.length; i++) {
-      final model = _quizModels[i];
+    for (int i = 0; i < GeminiConfig.quizModels.length; i++) {
+      final model = GeminiConfig.quizModels[i];
       final attempt = i + 1;
-      final apiUrl =
-          'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey';
+      final apiUrl = GeminiConfig.generateContentUrl(
+        model: model,
+        apiKey: apiKey,
+      );
 
       debugPrint('');
       debugPrint('────────────────────────────────────────────────────');
-      debugPrint('🚀 $operationName — TENTATIVA $attempt/${_quizModels.length}');
+      debugPrint('🚀 $operationName — TENTATIVA $attempt/${GeminiConfig.quizModels.length}');
       debugPrint('🤖 Modelo: $model');
       debugPrint('────────────────────────────────────────────────────');
 
@@ -1270,7 +1270,7 @@ Retorne estritamente o JSON solicitado pelo schema.
         debugPrint('📦 Resposta da API: ${_sanitizeLogDetail(response.body, apiKey)}');
 
         if (fallbackStatusCodes.contains(response.statusCode) &&
-            attempt < _quizModels.length) {
+            attempt < GeminiConfig.quizModels.length) {
           if (operationName == 'QUIZ' &&
               mounted &&
               _currentState == AppState.generating) {
@@ -1280,20 +1280,20 @@ Retorne estritamente o JSON solicitado pelo schema.
                   'O primeiro modelo não conseguiu concluir. Vou usar o modelo reserva para criar seu quiz.';
             });
           }
-          debugPrint('🔄 FALLBACK: tentando ${_quizModels[i + 1]}...');
+          debugPrint('🔄 FALLBACK: tentando ${GeminiConfig.quizModels[i + 1]}...');
           continue;
         }
 
-        // Se 3.5 e 3.1 responderam 503, saímos do loop para fazer UMA
-        // tentativa extra no 3.5 após uma pequena pausa.
-        final bothModelsReturned503 =
-            attempt == _quizModels.length &&
-            statusHistory.length >= _quizModels.length &&
+        // Se toda a cadeia responder 503, saímos do loop para fazer UMA
+        // tentativa extra no 3.5 Flash Lite após uma pequena pausa.
+        final allModelsReturned503 =
+            attempt == GeminiConfig.quizModels.length &&
+            statusHistory.length >= GeminiConfig.quizModels.length &&
             statusHistory
-                .sublist(statusHistory.length - _quizModels.length)
+                .sublist(statusHistory.length - GeminiConfig.quizModels.length)
                 .every((status) => status == 503);
 
-        if (bothModelsReturned503) {
+        if (allModelsReturned503) {
           break;
         }
 
@@ -1317,7 +1317,7 @@ Retorne estritamente o JSON solicitado pelo schema.
           debugPrint('⏱️ TIMEOUT REAL: 60 s concluídos no modelo $model.');
         }
 
-        if (attempt < _quizModels.length) {
+        if (attempt < GeminiConfig.quizModels.length) {
           if (operationName == 'QUIZ' &&
               mounted &&
               _currentState == AppState.generating) {
@@ -1328,7 +1328,7 @@ Retorne estritamente o JSON solicitado pelo schema.
                   : 'A primeira tentativa não concluiu. Vou tentar o modelo reserva agora.';
             });
           }
-          debugPrint('🔄 FALLBACK: tentando ${_quizModels[i + 1]}...');
+          debugPrint('🔄 FALLBACK: tentando ${GeminiConfig.quizModels[i + 1]}...');
           continue;
         }
       } finally {
@@ -1337,15 +1337,15 @@ Retorne estritamente o JSON solicitado pelo schema.
       }
     }
 
-    final bothModelsReturned503 =
-        statusHistory.length >= _quizModels.length &&
+    final allModelsReturned503 =
+        statusHistory.length >= GeminiConfig.quizModels.length &&
         statusHistory
-            .sublist(statusHistory.length - _quizModels.length)
+            .sublist(statusHistory.length - GeminiConfig.quizModels.length)
             .every((status) => status == 503);
 
-    if (bothModelsReturned503) {
-      const recoveryModel = 'gemini-3.5-flash-lite';
-      const recoveryAttempt = 3;
+    if (allModelsReturned503) {
+      const recoveryModel = GeminiConfig.quizRecoveryModel;
+      final recoveryAttempt = GeminiConfig.quizModels.length + 1;
 
       if (operationName == 'QUIZ' &&
           mounted &&
@@ -1359,14 +1359,16 @@ Retorne estritamente o JSON solicitado pelo schema.
 
       debugPrint('');
       debugPrint('════════════════════════════════════════════════════');
-      debugPrint('⏳ 503/503: os dois modelos informaram alta demanda.');
+      debugPrint('⏳ 503 EM TODA A CADEIA: todos os modelos informaram alta demanda.');
       debugPrint('🛟 Aguardando 8 s antes de UMA tentativa extra no $recoveryModel...');
       debugPrint('════════════════════════════════════════════════════');
 
       await Future.delayed(retry503Delay);
 
-      final apiUrl =
-          'https://generativelanguage.googleapis.com/v1beta/models/$recoveryModel:generateContent?key=$apiKey';
+      final apiUrl = GeminiConfig.generateContentUrl(
+        model: recoveryModel,
+        apiKey: apiKey,
+      );
       final stopwatch = Stopwatch()..start();
       bool requestFinished = false;
 
@@ -1811,9 +1813,9 @@ REGRAS GERAIS:
       debugPrint('════════════════════════════════════════════════════');
       debugPrint('🏁 RESULTADO FINAL DO QUIZ');
       debugPrint('🤖 Modelo final: ${quizResult.model}');
-      debugPrint(quizResult.attempt <= _quizModels.length
-          ? '🔢 Tentativa: ${quizResult.attempt}/${_quizModels.length}'
-          : '🔢 Tentativa: ${quizResult.attempt} (recuperação após 503/503)');
+      debugPrint(quizResult.attempt <= GeminiConfig.quizModels.length
+          ? '🔢 Tentativa: ${quizResult.attempt}/${GeminiConfig.quizModels.length}'
+          : '🔢 Tentativa: ${quizResult.attempt} (recuperação após 503 em toda a cadeia)');
       debugPrint('📡 Status final: ${response.statusCode}');
       debugPrint('════════════════════════════════════════════════════');
 
@@ -1898,7 +1900,7 @@ REGRAS GERAIS:
 
       if (response.statusCode == 503) {
         throw Exception(
-          'Os dois modelos de quiz estão com alta demanda no momento. '
+          'Os modelos de quiz estão com alta demanda no momento. '
           'Aguarde alguns instantes e tente novamente.',
         );
       }
@@ -1988,8 +1990,8 @@ REGRAS GERAIS:
             "role": "user",
             "parts": [
               {
-                "text": performanceReport +
-                    "\nRetorne estritamente em formato JSON contendo uma chave "
+                "text":
+                "$performanceReport\nRetorne estritamente em formato JSON contendo uma chave "
                     "'teacher_feedback' com a mensagem de feedback."
               }
             ]
@@ -2153,7 +2155,7 @@ REGRAS GERAIS:
               const SizedBox(height: 32),
               Center(
                 child: Text(
-                  'Versão do App: 1.2.0+13',
+                  'Versão do App: 1.2.0+14',
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                 ),
               ),
@@ -2771,7 +2773,7 @@ REGRAS GERAIS:
                                   Container(
                                     padding: const EdgeInsets.all(12),
                                     decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.6),
+                                      color: Colors.white.withValues(alpha: 0.6),
                                       borderRadius: BorderRadius.circular(8),
                                     ),
                                     child: Text(

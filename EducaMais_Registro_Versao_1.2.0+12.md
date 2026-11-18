@@ -1,6 +1,6 @@
 # Educa+.ai — Registro da Nova Versão
 
-**Versão do aplicativo:** `1.2.0+12`  
+**Versão do aplicativo:** `1.2.0+14`  
 **Status:** Em desenvolvimento / testes  
 **Plataformas configuradas:** Android, iOS e Web
 
